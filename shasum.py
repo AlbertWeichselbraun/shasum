@@ -12,6 +12,7 @@ class FileSystemTree(object):
     def __init__(self, root="/"):
         self.files = self.get_files( root ) 
 
+
     def get_files(self, root):
         # get file list
         files = { fname: MetaDataEntry(fname) for fname \
@@ -22,14 +23,35 @@ class FileSystemTree(object):
             files[fobj.fname] = fobj
         return files
 
+
+    def print_duplicates(self):
+        known_hashes = {}
+        duplicates = {}
+        print "Checking for duplicates in %d files." % (len(self.files))
+        for fobj in self.files.values():
+            if fobj.sha_hash is None:
+                continue
+
+            if fobj.sha_hash in known_hashes:
+                duplicates[fobj.sha_hash] = duplicates.get(fobj.sha_hash, set())
+                duplicates[fobj.sha_hash].add(fobj)
+                duplicates[fobj.sha_hash].add( known_hashes[fobj.sha_hash] )
+            else:
+                known_hashes[fobj.sha_hash] = fobj
+        
+        for h, dup in duplicates.items():
+            print h, ", ".join( [d.fname for d in dup] )
+           
+
     def update_files(self, forced=False):
         for fobj in self.files.values():
             fobj.update(forced)
 
+
     def verify_files(self):
-        print len(self.files.values())
         for fobj in self.files.values():
             fobj.verify()
+
 
     def parse_facl_output(self, output):
         """ parses the output of getattr 
@@ -124,7 +146,8 @@ def get_arguments():
 if __name__ == '__main__':
     args = get_arguments()
     f = FileSystemTree( args.path )
-    f.verify_files()
+    # f.verify_files()
+    f.print_duplicates()
 
 
 
