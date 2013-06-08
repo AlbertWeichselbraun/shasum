@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
 from argparse import ArgumentParser
-from commands import getoutput
+from subprocess import Popen, PIPE
 from hashlib import sha1
-from time import strptime, strftime, time
+from time import strptime, strftime, localtime
+
+from sys import stderr
 
 class FileSystemTree(object):
 
@@ -13,9 +15,17 @@ class FileSystemTree(object):
 
     def get_files(self, root):
         files = {}
-        for fobj in self.parse_facl_output( getoutput("getfattr -Rd --absolute-names %s" % (root)) ):
+        for fobj in self.parse_facl_output( Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[0] ):
             files[fobj.fname] = fobj
         return files
+
+    def update_files(self, forced=False):
+        for fobj in self.files.values():
+            fobj.update(forced)
+
+    def verify_files(self):
+        for fobj in self.files.values():
+            fobj.verify()
 
     def parse_facl_output(self, output):
         """ parses the output of getattr 
@@ -34,9 +44,9 @@ class FileSystemTree(object):
             elif line.startswith("user.sha1date="):
                 sha_date_str = line.split("user.sha1date=")[1].replace("\"", "")
                 if ':' in sha_date_str:
-                    sha_date = strptime(MetaDataEntry.DEFAULT_TIME_FORMAT, sha_date_str)
+                    sha_date = strptime(sha_date_str, MetaDataEntry.DEFAULT_TIME_FORMAT)
                 else:
-                    sha_date = strptime(MetaDataEntry.LEGACY_TIME_FORMAT, sha_date_str)
+                    sha_date = strptime(sha_date_str, MetaDataEntry.LEGACY_TIME_FORMAT)
 
             elif line.strip()=="":
                 yield MetaDataEntry(fname, sha_hash, sha_date)
@@ -63,19 +73,21 @@ class MetaDataEntry(object):
             return
 
         self.sha_hash = sha1( open(self.fname).read() ).hexdigest()
-        self.sha_date = time()
+        self.sha_date = localtime()
         # serialize changes
-        self._write(self.fname, 'sha1', self.sha_hash)
-        self._write(self.fname, 'sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
+        self._write(self.fname, 'user.sha1', self.sha_hash)
+        self._write(self.fname, 'user.sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
 
     def verify(self):
         """ verifies the sha sum and updates the sha1date value accordingly"""
+        print "Verifying SHASUM for '%s'" % (self.fname), 
         sha_content = sha1( open(self.fname).read() ).hexdigest()
         if sha_content == self.sha_hash:
-            self.sha_date = time()
-            self._write(self.fname, 'sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
+            self.sha_date = localtime()
+            self._write(self.fname, 'user.sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
+            print "OK"
         else:
-            print "INCORRECT sha hash for '%s' - expected: '%s' but got '%s'!" % (self.fname, self.sha_hash, sha_content)
+            stderr.write("INCORRECT! - expected: '%s' but got '%s'!\n" % (self.fname, self.sha_hash, sha_content))
 
     def verify_older(self, min_date):
         """ verifies the shasum of the file if it is older than
@@ -85,7 +97,7 @@ class MetaDataEntry(object):
 
     @staticmethod
     def _write(fname, attr, value):
-        getoutput("setfattr -n %s -v %s \"%s\"" % (attr, value, fname))
+        Popen(["setfattr", "-n", attr, "-v", value, fname], stdout=PIPE).communicate()[0]
 
     def __str__(self):
         return "%s (%s, %s)" % (self.fname, self.sha_hash, self.sha_date)
@@ -101,6 +113,9 @@ def get_arguments():
 if __name__ == '__main__':
     args = get_arguments()
     f = FileSystemTree( args.path )
+    f.verify_files()
+
+
 
 
     
