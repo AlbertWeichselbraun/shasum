@@ -12,10 +12,13 @@ class FileSystemTree(object):
     def __init__(self, root="/"):
         self.files = self.get_files( root ) 
 
-
     def get_files(self, root):
-        files = {}
-        for fobj in self.parse_facl_output( Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[0] ):
+        # get file list
+        files = { fname: MetaDataEntry(fname) for fname \
+                  in Popen(["find", root, "-type", "f" ], stdout=PIPE).communicate()[0].strip().split("\n") }
+
+        # update metadata, if required
+        for fobj in self.parse_facl_output( Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[1] ):
             files[fobj.fname] = fobj
         return files
 
@@ -24,6 +27,7 @@ class FileSystemTree(object):
             fobj.update(forced)
 
     def verify_files(self):
+        print len(self.files.values())
         for fobj in self.files.values():
             fobj.verify()
 
@@ -33,6 +37,9 @@ class FileSystemTree(object):
             user.sha1="0000000000000000000000000000000000000000"
             user.sha1date="2013-06-02"
         """
+        if not output:
+            raise StopIteration
+
         sha_hash = None
         sha_date = None
         for line in output.split("\n"):
@@ -59,7 +66,7 @@ class MetaDataEntry(object):
     DEFAULT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
     LEGACY_TIME_FORMAT  = "%Y-%m-%d"
     
-    def __init__(self, fname, sha_hash, sha_date):
+    def __init__(self, fname, sha_hash=None, sha_date=None):
         self.fname   = fname
         self.sha_hash = sha_hash
         self.sha_date = sha_date
@@ -72,6 +79,7 @@ class MetaDataEntry(object):
         if self.sha_hash and not force:
             return
 
+        print "Computing SHASUM for '%s'" % (self.fname)
         self.sha_hash = sha1( open(self.fname).read() ).hexdigest()
         self.sha_date = localtime()
         # serialize changes
@@ -80,6 +88,9 @@ class MetaDataEntry(object):
 
     def verify(self):
         """ verifies the sha sum and updates the sha1date value accordingly"""
+        if not self.sha_hash:
+            self.update()
+            return 
         print "Verifying SHASUM for '%s'" % (self.fname), 
         sha_content = sha1( open(self.fname).read() ).hexdigest()
         if sha_content == self.sha_hash:
