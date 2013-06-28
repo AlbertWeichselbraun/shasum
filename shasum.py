@@ -19,7 +19,8 @@ class FileSystemTree(object):
                   in Popen(["find", root, "-type", "f" ], stdout=PIPE).communicate()[0].strip().split("\n") }
 
         # update metadata, if required
-        for fobj in self.parse_facl_output( Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[1] ):
+        getfattr_output = Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[0].replace("//", "/")
+        for fobj in self.parse_facl_output( getfattr_output ):
             files[fobj.fname] = fobj
         return files
 
@@ -81,6 +82,10 @@ class FileSystemTree(object):
                 yield MetaDataEntry(fname, sha_hash, sha_date)
                 sha_hash = None
                 sha_date = None
+        # last line 
+        yield MetaDataEntry(fname, sha_hash, sha_date)
+
+
 
     
 class MetaDataEntry(object):
