@@ -140,14 +140,27 @@ def get_arguments():
     parser = ArgumentParser(description='Compute shasums')
     parser.add_argument('path', metavar='path', type=str, 
                          help='Path for computing checksums')
+    parser.add_argument('-verify', action='store_true', 
+                         help='Verify the shasums of all files.')
+    parser.add_argument('-compute', action='store_true',
+                         help='Compute the shasum of all new files.')
+    parser.add_argument('-print-duplicates', action='store_true',
+                         help='Compute duplicates.')
+    #parser.add_argument('verify-date', type=str,
+    #                     help='Verify all files that have not been verified since verify-date.')
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = get_arguments()
     f = FileSystemTree( args.path )
-    # f.verify_files()
-    f.print_duplicates()
+    
+    if args.compute:
+        f.update_files()
+    elif args.verify:
+        f.verify_files()
+    elif args.print_duplicates:
+        f.print_duplicates()
 
 
 
