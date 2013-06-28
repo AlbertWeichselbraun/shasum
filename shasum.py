@@ -78,12 +78,10 @@ class FileSystemTree(object):
                 else:
                     sha_date = strptime(sha_date_str, MetaDataEntry.LEGACY_TIME_FORMAT)
 
-            elif line.strip()=="":
+            elif line.strip()=="" and sha_hash and sha_date:
                 yield MetaDataEntry(fname, sha_hash, sha_date)
                 sha_hash = None
                 sha_date = None
-        # last line 
-        yield MetaDataEntry(fname, sha_hash, sha_date)
 
 
 
