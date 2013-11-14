@@ -1,16 +1,47 @@
 #!/usr/bin/env python
 
+'''
+shasum.py
+-----------------------------------------------------------------------
+Computes and stores the shasum of files in file system attributes
+and uses them to
+ a) verify the file integrity
+ b) identifiy duplicate files
+ c) hard-link based deduplication
+-----------------------------------------------------------------------
+Copyrights 2011-2013 by Albert Weichselbraun <albert@weichselbraun.net>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+@author: Albert Weichselbraun <albert@weichselbraun.net>
+'''
+
 from argparse import ArgumentParser
 from subprocess import Popen, PIPE
 from hashlib import sha1
 from time import strptime, strftime, localtime
+from os import stat
 
 from sys import stderr
 
 shellquote = lambda s: "'" + s.replace("'", "'\\''") + "'"
 
 class FileSystemTree(object):
-
+    '''
+    Provides methods for handling files in a file
+    system tree based on the getfattr output.
+    '''
     def __init__(self, root="/"):
         self.files = self.get_files( root ) 
 
@@ -18,7 +49,8 @@ class FileSystemTree(object):
     def get_files(self, root):
         # get file list
         files = { fname: MetaDataEntry(fname) for fname \
-                  in Popen(["find", root, "-type", "f" ], stdout=PIPE).communicate()[0].strip().split("\n") }
+                  in Popen(["find", root, "-type", "f" ], stdout=PIPE
+                  ).communicate()[0].strip().split("\n") }
 
         # update metadata, if required
         getfattr_output = Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[0].replace("//", "/")
@@ -28,21 +60,22 @@ class FileSystemTree(object):
 
 
     def print_duplicates(self):
-        print "Checking for duplicates in %d files." % (len(self.files))
+        print("Checking for duplicates in %d files." % (len(self.files)))
        
-        _, duplicates = self._get_duplicates()
+        known_hashes, duplicates = self._get_duplicates()
         for h, dup in duplicates.items():
-            print h, ", ".join( [d.fname for d in dup] )
+            print(h, known_hashes[h].fname, "-->", 
+                  ", ".join( [d.fname for d in dup] ))
 
     def print_deduplication_sh(self):
         ''' ::returns: a bash script which will replace duplicates
                        with hardlinks '''
-        print "#!/bin/sh"
+        print("#!/bin/sh")
         known_hashes, duplicates = self._get_duplicates()
         for h, dup in duplicates.items():
             src = known_hashes[h]
             for d in dup:
-                print "ln -f '%s' '%s'" % (src.fname, d.fname)
+                print("ln -f %s %s" % (shellquote(src.fname), shellquote(d.fname)))
 
 
     def _get_duplicates(self):
@@ -54,10 +87,10 @@ class FileSystemTree(object):
             if fobj.sha_hash is None:
                 continue
 
-            if fobj.sha_hash in known_hashes:
+            # only consider duplicates that are not already hardlinked :)
+            if fobj.sha_hash in known_hashes and stat(fobj.fname).st_nlink==1:
                 duplicates[fobj.sha_hash] = duplicates.get(fobj.sha_hash, set())
                 duplicates[fobj.sha_hash].add(fobj)
-                duplicates[fobj.sha_hash].add( known_hashes[fobj.sha_hash] )
             else:
                 known_hashes[fobj.sha_hash] = fobj
 
@@ -75,11 +108,11 @@ class FileSystemTree(object):
 
 
     def parse_facl_output(self, output):
-        """ parses the output of getattr 
+        ''' parses the output of getattr 
             # file: path + fname
             user.sha1="0000000000000000000000000000000000000000"
             user.sha1date="2013-06-02"
-        """
+        '''
         if not output:
             raise StopIteration
 
@@ -107,6 +140,9 @@ class FileSystemTree(object):
 
     
 class MetaDataEntry(object):
+    ''' parses the metadata provided by setfattr and exposes
+        it through an object interface.
+    '''
 
     DEFAULT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
     LEGACY_TIME_FORMAT  = "%Y-%m-%d"
@@ -117,10 +153,10 @@ class MetaDataEntry(object):
         self.sha_date = sha_date
 
     def update(self, force=False):
-        """ updates the shasum of the given file 
+        ''' updates the shasum of the given file 
             @param force: whether to force an update of files with existing
                           shasums 
-        """
+        '''
         if self.sha_hash and not force:
             return
 
@@ -132,7 +168,7 @@ class MetaDataEntry(object):
         self._write(self.fname, 'user.sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
 
     def verify(self):
-        """ verifies the sha sum and updates the sha1date value accordingly"""
+        ''' verifies the sha sum and updates the sha1date value accordingly'''
         if not self.sha_hash:
             self.update()
             return 
@@ -146,8 +182,8 @@ class MetaDataEntry(object):
             stderr.write("INCORRECT checksum for '%s'! - expected: '%s' but got '%s'!\n" % (self.fname, self.sha_hash, sha_content))
 
     def verify_older(self, min_date):
-        """ verifies the shasum of the file if it is older than
-            min_date """
+        ''' verifies the shasum of the file if it is older than
+            min_date '''
         if self.sha_date < min_date:
             self.verify()
 
