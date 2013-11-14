@@ -7,6 +7,8 @@ from time import strptime, strftime, localtime
 
 from sys import stderr
 
+shellquote = lambda s: "'" + s.replace("'", "'\\''") + "'"
+
 class FileSystemTree(object):
 
     def __init__(self, root="/"):
@@ -26,9 +28,28 @@ class FileSystemTree(object):
 
 
     def print_duplicates(self):
+        print "Checking for duplicates in %d files." % (len(self.files))
+       
+        _, duplicates = self._get_duplicates()
+        for h, dup in duplicates.items():
+            print h, ", ".join( [d.fname for d in dup] )
+
+    def print_deduplication_sh(self):
+        ''' ::returns: a bash script which will replace duplicates
+                       with hardlinks '''
+        print "#!/bin/sh"
+        known_hashes, duplicates = self._get_duplicates()
+        for h, dup in duplicates.items():
+            src = known_hashes[h]
+            for d in dup:
+                print "ln -f '%s' '%s'" % (src.fname, d.fname)
+
+
+    def _get_duplicates(self):
+        ''' ::returns: a dictionary with the hash and file
+                       objects of all all known_files and of all duplicates '''
         known_hashes = {}
         duplicates = {}
-        print "Checking for duplicates in %d files." % (len(self.files))
         for fobj in self.files.values():
             if fobj.sha_hash is None:
                 continue
@@ -39,11 +60,10 @@ class FileSystemTree(object):
                 duplicates[fobj.sha_hash].add( known_hashes[fobj.sha_hash] )
             else:
                 known_hashes[fobj.sha_hash] = fobj
-        
-        for h, dup in duplicates.items():
-            print h, ", ".join( [d.fname for d in dup] )
-           
 
+        return known_hashes, duplicates
+
+ 
     def update_files(self, forced=False):
         for fobj in self.files.values():
             fobj.update(forced)
@@ -123,7 +143,7 @@ class MetaDataEntry(object):
             self._write(self.fname, 'user.sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
             print "OK"
         else:
-            stderr.write("INCORRECT! - expected: '%s' but got '%s'!\n" % (self.fname, self.sha_hash, sha_content))
+            stderr.write("INCORRECT checksum for '%s'! - expected: '%s' but got '%s'!\n" % (self.fname, self.sha_hash, sha_content))
 
     def verify_older(self, min_date):
         """ verifies the shasum of the file if it is older than
@@ -149,6 +169,8 @@ def get_arguments():
                          help='Compute the shasum of all new files.')
     parser.add_argument('-print-duplicates', action='store_true',
                          help='Compute duplicates.')
+    parser.add_argument('-print-deduplication-sh', action='store_true',
+                         help='Returns a shell script which replaces duplicates with hard links.')
     #parser.add_argument('verify-date', type=str,
     #                     help='Verify all files that have not been verified since verify-date.')
     return parser.parse_args()
@@ -164,6 +186,8 @@ if __name__ == '__main__':
         f.verify_files()
     elif args.print_duplicates:
         f.print_duplicates()
+    elif args.print_deduplication_sh:
+        f.print_deduplication_sh()
 
 
 
