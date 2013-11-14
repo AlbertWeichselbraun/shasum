@@ -31,6 +31,7 @@ from argparse import ArgumentParser
 from subprocess import Popen, PIPE
 from hashlib import sha1
 from time import strptime, strftime, localtime
+from datetime import datetime, timedelta
 from os import stat
 
 from sys import stderr
@@ -102,9 +103,10 @@ class FileSystemTree(object):
             fobj.update(forced)
 
 
-    def verify_files(self):
+    def verify_files(self, min_age):
+        min_age = (datetime.now() - timedelta(days=min_age)).timetuple()
         for fobj in self.files.values():
-            fobj.verify()
+            fobj.verify_older(min_age)
 
 
     def parse_facl_output(self, output):
@@ -199,13 +201,13 @@ def get_arguments():
     parser = ArgumentParser(description='Compute shasums')
     parser.add_argument('path', metavar='path', type=str, 
                          help='Path for computing checksums')
-    parser.add_argument('-verify', action='store_true', 
-                         help='Verify the shasums of all files.')
-    parser.add_argument('-compute', action='store_true',
+    parser.add_argument('--verify', metavar='age', type=int, default=180,
+                         help='Verify the shasums of all files with a last sha1date older than age days (default: 180).')
+    parser.add_argument('--compute', action='store_true',
                          help='Compute the shasum of all new files.')
-    parser.add_argument('-print-duplicates', action='store_true',
+    parser.add_argument('--print-duplicates', action='store_true',
                          help='Compute duplicates.')
-    parser.add_argument('-print-deduplication-sh', action='store_true',
+    parser.add_argument('--print-deduplication-sh', action='store_true',
                          help='Returns a shell script which replaces duplicates with hard links.')
     #parser.add_argument('verify-date', type=str,
     #                     help='Verify all files that have not been verified since verify-date.')
@@ -218,8 +220,8 @@ if __name__ == '__main__':
     
     if args.compute:
         f.update_files()
-    elif args.verify:
-        f.verify_files()
+    elif args.verify is not None:
+        f.verify_files(args.verify)
     elif args.print_duplicates:
         f.print_duplicates()
     elif args.print_deduplication_sh:
