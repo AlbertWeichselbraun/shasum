@@ -28,15 +28,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 
 from argparse import ArgumentParser
-from subprocess import Popen, PIPE
-from hashlib import sha1
+from subprocess import Popen, PIPE, check_output
 from time import strptime, strftime, localtime
 from datetime import datetime, timedelta
 from os import stat
+from hashlib import sha1
+from functools import partial
 
 from sys import stderr
 
-shellquote = lambda s: "'" + s.replace("'", "'\\''") + "'"
+READ_BUFFER_SIZE = 1024*1024
+SHELLQUOTE = lambda s: "'" + s.replace("'", "'\\''") + "'"
 
 class FileSystemTree(object):
     '''
@@ -44,29 +46,26 @@ class FileSystemTree(object):
     system tree based on the getfattr output.
     '''
     def __init__(self, root="/"):
-        self.files = self.get_files( root ) 
+        self.files = self.get_files(root)
 
 
     def get_files(self, root):
         # get file list
-        files = { fname: MetaDataEntry(fname) for fname \
-                  in Popen(["find", root, "-type", "f" ], stdout=PIPE
-                  ).communicate()[0].strip().split("\n") }
+        files = {fname: MetaDataEntry(fname) for fname in Popen(["find", root, "-type", "f"], stdout=PIPE).communicate()[0].strip().split("\n")}
 
         # update metadata, if required
-        getfattr_output = Popen(["getfattr", "-R", "-d", "--absolute-names",  root], stdout=PIPE).communicate()[0].replace("//", "/")
-        for fobj in self.parse_facl_output( getfattr_output ):
+        getfattr_output = Popen(["getfattr", "-R", "-d", "--absolute-names", root], stdout=PIPE).communicate()[0].replace("//", "/")
+        for fobj in self.parse_facl_output(getfattr_output):
             files[fobj.fname] = fobj
         return files
 
 
     def print_duplicates(self):
         print("Checking for duplicates in %d files." % (len(self.files)))
-       
+
         known_hashes, duplicates = self._get_duplicates()
         for h, dup in duplicates.items():
-            print(h, known_hashes[h].fname, "-->", 
-                  ", ".join( [d.fname for d in dup] ))
+            print(h, known_hashes[h].fname, "-->", ", ".join([d.fname for d in dup]))
 
     def print_deduplication_sh(self):
         ''' ::returns: a bash script which will replace duplicates
@@ -76,7 +75,7 @@ class FileSystemTree(object):
         for h, dup in duplicates.items():
             src = known_hashes[h]
             for d in dup:
-                print("ln -f %s %s" % (shellquote(src.fname), shellquote(d.fname)))
+                print("ln -f %s %s" % (SHELLQUOTE(src.fname), SHELLQUOTE(d.fname)))
 
 
     def _get_duplicates(self):
@@ -89,7 +88,7 @@ class FileSystemTree(object):
                 continue
 
             # only consider duplicates that are not already hardlinked :)
-            if fobj.sha_hash in known_hashes and stat(fobj.fname).st_nlink==1:
+            if fobj.sha_hash in known_hashes and stat(fobj.fname).st_nlink == 1:
                 duplicates[fobj.sha_hash] = duplicates.get(fobj.sha_hash, set())
                 duplicates[fobj.sha_hash].add(fobj)
             else:
@@ -97,7 +96,7 @@ class FileSystemTree(object):
 
         return known_hashes, duplicates
 
- 
+
     def update_files(self, forced=False):
         for fobj in self.files.values():
             fobj.update(forced)
@@ -110,7 +109,7 @@ class FileSystemTree(object):
 
 
     def parse_facl_output(self, output):
-        ''' parses the output of getattr 
+        ''' parses the output of getattr
             # file: path + fname
             user.sha1="0000000000000000000000000000000000000000"
             user.sha1date="2013-06-02"
@@ -133,37 +132,54 @@ class FileSystemTree(object):
                 else:
                     sha_date = strptime(sha_date_str, MetaDataEntry.LEGACY_TIME_FORMAT)
 
-            elif line.strip()=="" and sha_hash and sha_date:
+            elif line.strip() == "" and sha_hash and sha_date:
                 yield MetaDataEntry(fname, sha_hash, sha_date)
                 sha_hash = None
                 sha_date = None
 
 
 
-    
+
 class MetaDataEntry(object):
     ''' parses the metadata provided by setfattr and exposes
         it through an object interface.
     '''
 
     DEFAULT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-    LEGACY_TIME_FORMAT  = "%Y-%m-%d"
-    
+    LEGACY_TIME_FORMAT = "%Y-%m-%d"
+
     def __init__(self, fname, sha_hash=None, sha_date=None):
-        self.fname   = fname
+        self.fname = fname
         self.sha_hash = sha_hash
         self.sha_date = sha_date
 
+    @staticmethod
+    def sha(fname):
+        '''
+        A memory friendly function for computing the shasum of a file.
+        ::param: fname
+        ::return:
+            computes the file's shaname
+        '''
+        with open(fname) as f:
+            fhash = sha1()
+            for chunk in iter(partial(f.read, READ_BUFFER_SIZE), ''):
+                fhash.update(chunk)
+
+        return fhash.hexdigest()
+
+
     def update(self, force=False):
-        ''' updates the shasum of the given file 
+        ''' updates the shasum of the given file
             @param force: whether to force an update of files with existing
-                          shasums 
+                          shasums
         '''
         if self.sha_hash and not force:
             return
 
         print "Computing SHASUM for '%s'" % (self.fname)
-        self.sha_hash = sha1( open(self.fname).read() ).hexdigest()
+
+        self.sha_hash = self.sha(self.fname)
         self.sha_date = localtime()
         # serialize changes
         self._write(self.fname, 'user.sha1', self.sha_hash)
@@ -173,9 +189,9 @@ class MetaDataEntry(object):
         ''' verifies the sha sum and updates the sha1date value accordingly'''
         if not self.sha_hash:
             self.update()
-            return 
-        print "Verifying SHASUM for '%s'" % (self.fname), 
-        sha_content = sha1( open(self.fname).read() ).hexdigest()
+            return
+        print "Verifying SHASUM for '%s'" % (self.fname),
+        sha_content = self.sha(self.fname)
         if sha_content == self.sha_hash:
             self.sha_date = localtime()
             self._write(self.fname, 'user.sha1date', strftime(self.DEFAULT_TIME_FORMAT, self.sha_date))
@@ -199,35 +215,40 @@ class MetaDataEntry(object):
 
 def get_arguments():
     parser = ArgumentParser(description='Compute shasums')
-    parser.add_argument('path', metavar='path', type=str, 
-                         help='Path for computing checksums')
-    parser.add_argument('--verify', metavar='age', type=int, default=180,
-                         help='Verify the shasums of all files with a last sha1date older than age days (default: 180).')
-    parser.add_argument('--compute', action='store_true',
-                         help='Compute the shasum of all new files.')
-    parser.add_argument('--print-duplicates', action='store_true',
-                         help='Compute duplicates.')
-    parser.add_argument('--print-deduplication-sh', action='store_true',
-                         help='Returns a shell script which replaces duplicates with hard links.')
-    #parser.add_argument('verify-date', type=str,
-    #                     help='Verify all files that have not been verified since verify-date.')
+    parser.add_argument('path', metavar='path', type=str, help='Path for computing checksums')
+    parser.add_argument('--verify', metavar='age', type=int, default=180, help='Verify the shasums of all files with a last sha1date older than age days (default: 180).')
+    parser.add_argument('--compute', action='store_true', help='Compute the shasum of all new files.')
+    parser.add_argument('--sha', action='store_true', help='Computes the SHA sum of the given file.')
+    parser.add_argument('--print-duplicates', action='store_true', help='Compute duplicates.')
+    parser.add_argument('--print-deduplication-sh', action='store_true', help='Returns a shell script which replaces duplicates with hard links.')
     return parser.parse_args()
 
 
+# --------------------------------------------------------------------------
+# Unit tests
+# --------------------------------------------------------------------------
+def test_shasum():
+    ''' compares the system's shasum with the internal one. '''
+    fname = "/etc/passwd"
+    assert check_output(['/usr/bin/shasum', fname]).split()[0] == MetaDataEntry.sha(fname)
+
+
+# --------------------------------------------------------------------------
+# Main program
+# --------------------------------------------------------------------------
 if __name__ == '__main__':
     args = get_arguments()
-    f = FileSystemTree( args.path )
-    
+    ftree = FileSystemTree(args.path)
+
     if args.compute:
-        f.update_files()
+        ftree.update_files()
+    elif args.sha:
+        sha = MetaDataEntry.sha(args.path)
+        print(args.path, sha)
     elif args.verify is not None:
-        f.verify_files(args.verify)
+        ftree.verify_files(args.verify)
     elif args.print_duplicates:
-        f.print_duplicates()
+        ftree.print_duplicates()
     elif args.print_deduplication_sh:
-        f.print_deduplication_sh()
+        ftree.print_deduplication_sh()
 
-
-
-
-    
