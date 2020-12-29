@@ -34,6 +34,9 @@ from datetime import datetime, timedelta
 from os import stat
 from hashlib import sha1
 from functools import partial
+import curses
+from signal import signal, SIGWINCH
+
 
 from sys import stderr
 
@@ -42,6 +45,127 @@ READ_BUFFER_SIZE = 1024*1024
 
 def shellquote(s):
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+class CursesUi():
+
+    def __init__(self, stdscr, total_items):
+        self.stdscr = stdscr
+        self.scanned_items = 0
+        self.err_items = 0
+        self.total_items = total_items
+        self.init_gui()
+        self.window_buffer = {'completed': [],
+                              'errors': []}
+        self.spinner = self.cursor()
+
+    def init_gui(self):
+        max_y, max_x = self.stdscr.getmaxyx()
+        nlines_file_windows = (max_y - 7) // 2
+        ncols_file_windows = max_x - 3
+
+        self.stdscr.clear()
+        self.stdscr.border()
+        self.stdscr.addstr(1, 1, "shasum.py",
+                           curses.COLOR_YELLOW)
+
+        # status windows
+        self.win_status_files = self.stdscr.subwin(1, ncols_file_windows,
+                                                   3, 1)
+        self.win_status_err = self.stdscr.subwin(1, ncols_file_windows,
+                                                 4 + nlines_file_windows, 1)
+        self.win_progress = self.stdscr.subwin(1, ncols_file_windows,
+                                               5 + 2 * nlines_file_windows, 1)
+
+        # file windows
+        self.win_current_file = self.stdscr.subwin(1,
+                                                   ncols_file_windows,
+                                                   4, 2)
+        self.win_spin = self.stdscr.subwin(1, 2,
+                                           4, 2)
+        self.win_completed_files = self.stdscr.subwin(nlines_file_windows - 1,
+                                                      ncols_file_windows,
+                                                      5, 2)
+        self.win_errors = self.stdscr.subwin(nlines_file_windows,
+                                             ncols_file_windows,
+                                             5 + nlines_file_windows, 2)
+
+        self.stdscr.refresh()
+
+    def resize_handler(self, signum, frame):
+        curses.update_lines_cols()
+        curses.endwin()
+        self.init_gui()
+
+    @staticmethod
+    def cursor():
+        while True:
+            for cursor in "\\|/-":
+                yield cursor
+
+    def set_current_file(self, fname):
+        _, max_x = self.win_current_file.getmaxyx()
+        self.win_current_file.clear()
+        self.win_current_file.addstr(fname[-(max_x-2):] + " ")
+        y, x = [sum(t) for t in zip(self.win_current_file.getyx(),
+                                    self.win_current_file.getparyx())]
+        self.win_spin = self.stdscr.subwin(1, 2, y, x)
+        self.win_spin.addstr(0, 0, "-")
+        self.win_current_file.refresh()
+        self.win_spin.refresh()
+
+    def clear_current_file(self):
+        self.win_current_file.clear()
+
+    def add_file(self, window_name, fname):
+        window = self.win_completed_files if window_name == \
+            'completed' else self.win_errors
+        max_y, max_x = window.getmaxyx()
+        cur_window_buffer = self.window_buffer[window_name]
+        cur_window_buffer.append(fname)
+
+        # enforce max_y size
+        if len(cur_window_buffer) >= max_y:
+            cur_window_buffer.pop(0)
+
+        window.clear()
+        for no, fname in enumerate(reversed(cur_window_buffer)):
+            if no >= window.getmaxyx()[0]-1:
+                break
+            window.addstr(fname[-window.getmaxyx()[1]:] + "\n")
+        window.refresh()
+
+    def update_spin(self):
+        self.win_spin.addstr(0, 0, next(self.spinner))
+        self.win_spin.refresh()
+
+    def update_progress(self, done=1, error=0):
+        self.scanned_items += done
+        self.err_items += error
+
+        self.win_status_files.clear()
+        self.win_status_files.addstr(0, 0,
+                                     "Files: {}/{}".format(self.scanned_items,
+                                                           self.total_items))
+        self.win_status_err.clear()
+        self.win_status_err.addstr(0, 0,
+                                   "Errors: {}/{}".format(self.err_items,
+                                                          self.total_items))
+
+        _, max_x = self.win_progress.getmaxyx()
+        percent = self.scanned_items / self.total_items
+
+        done = "#" * int((max_x - 20) * percent)
+        todo = "." * ((max_x - 20) - len(done))
+        self.win_progress.clear()
+        self.win_progress.addstr(
+            "Progress: [{}{}] ({:>3}%)".format(done, todo,
+                                               int(round(percent * 100, 0))))
+        self.win_progress.refresh()
+
+        self.win_status_files.refresh()
+        self.win_status_err.refresh()
+
 
 
 class FileSystemTree(object):
@@ -54,7 +178,6 @@ class FileSystemTree(object):
 
     def get_files(self, root):
         # get file list
-        co = check_output(["find", root, "-type", "f"])
         files = {fname: MetaDataEntry(fname)
                  for fname in check_output(["find", root, "-type", "f"])
                  .decode("utf8").strip().split("\n")}
@@ -108,12 +231,20 @@ class FileSystemTree(object):
         return known_hashes, duplicates
 
     def update_files(self, forced=False):
+        stdscr = curses.initscr()
+        self.ui = CursesUi(stdscr, len(self.files.values()))
+        signal(SIGWINCH, self.ui.resize_handler)
         for fobj in self.files.values():
+            fobj.ui = self.ui
             fobj.update(forced)
 
     def verify_files(self, min_age):
+        stdscr = curses.initscr()
+        self.ui = CursesUi(stdscr, len(self.files.values()))
+        signal(SIGWINCH, self.ui.resize_handler)
         min_age = (datetime.now() - timedelta(days=min_age)).timetuple()
         for fobj in self.files.values():
+            fobj.ui = self.ui
             fobj.verify_older(min_age)
 
     def parse_facl_output(self, output):
@@ -159,8 +290,7 @@ class MetaDataEntry(object):
         self.sha_hash = sha_hash
         self.sha_date = sha_date
 
-    @staticmethod
-    def sha(fname):
+    def sha(self, fname):
         '''
         A memory friendly function for computing the shasum of a file.
         ::param: fname
@@ -171,6 +301,7 @@ class MetaDataEntry(object):
         with open(fname, 'rb') as f:
             for chunk in iter(partial(f.read, READ_BUFFER_SIZE), b''):
                 fhash.update(chunk)
+                self.ui.udpate_spin()
 
         return fhash.hexdigest()
 
@@ -180,9 +311,10 @@ class MetaDataEntry(object):
                           shasums
         '''
         if self.sha_hash and not force:
+            self.ui.update_progress()
             return
 
-        print("Computing SHASUM for '%s'" % (self.fname))
+        self.ui.set_current_file(self.fname)
 
         self.sha_hash = self.sha(self.fname)
         self.sha_date = localtime()
@@ -196,16 +328,16 @@ class MetaDataEntry(object):
         if not self.sha_hash:
             self.update()
             return
-        print(f"Verifying SHASUM for '{self.fname}'", end="...")
+
+        self.ui.set_current_file(self.fname)
         sha_content = self.sha(self.fname)
         if sha_content == self.sha_hash:
             self.sha_date = localtime()
             self._write(self.fname, 'user.sha1date', strftime(
                 self.DEFAULT_TIME_FORMAT, self.sha_date))
-            print("OK")
+            self.ui.add_file("completed", self.fname)
         else:
-            stderr.write(f"INCORRECT checksum for '{self.fname}'! - expected:"
-                         f"{self.sha_hash}' but got '{sha_content}'!\n")
+            self.ui.add_file("errors", self.fname)
 
     def verify_older(self, min_date):
         ''' verifies the shasum of the file if it is older than
@@ -247,7 +379,7 @@ def test_shasum():
     ''' compares the system's shasum with the internal one. '''
     fname = "/etc/passwd"
     assert check_output(['/usr/bin/shasum', fname]).decode("utf8").\
-        split()[0] == MetaDataEntry.sha(fname)
+        split()[0] == MetaDataEntry().sha(fname)
 
 
 # --------------------------------------------------------------------------
