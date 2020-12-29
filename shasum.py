@@ -38,9 +38,7 @@ import curses
 from signal import signal, SIGWINCH
 
 
-from sys import stderr
-
-READ_BUFFER_SIZE = 1024*1024
+READ_BUFFER_SIZE = 1024*1024*8
 
 
 def shellquote(s):
@@ -105,7 +103,7 @@ class CursesUi():
 
     def set_current_file(self, fname):
         _, max_x = self.win_current_file.getmaxyx()
-        self.win_current_file.clear()
+        self.win_current_file.erase()
         self.win_current_file.addstr(fname[-(max_x-2):] + " ")
         y, x = [sum(t) for t in zip(self.win_current_file.getyx(),
                                     self.win_current_file.getparyx())]
@@ -115,7 +113,7 @@ class CursesUi():
         self.win_spin.refresh()
 
     def clear_current_file(self):
-        self.win_current_file.clear()
+        self.win_current_file.erase()
 
     def add_file(self, window_name, fname):
         window = self.win_completed_files if window_name == \
@@ -128,7 +126,7 @@ class CursesUi():
         if len(cur_window_buffer) >= max_y:
             cur_window_buffer.pop(0)
 
-        window.clear()
+        window.erase()
         for no, fname in enumerate(reversed(cur_window_buffer)):
             if no >= window.getmaxyx()[0]-1:
                 break
@@ -143,11 +141,11 @@ class CursesUi():
         self.scanned_items += done
         self.err_items += error
 
-        self.win_status_files.clear()
+        self.win_status_files.erase()
         self.win_status_files.addstr(0, 0,
                                      "Files: {}/{}".format(self.scanned_items,
                                                            self.total_items))
-        self.win_status_err.clear()
+        self.win_status_err.erase()
         self.win_status_err.addstr(0, 0,
                                    "Errors: {}/{}".format(self.err_items,
                                                           self.total_items))
@@ -157,7 +155,7 @@ class CursesUi():
 
         done = "#" * int((max_x - 20) * percent)
         todo = "." * ((max_x - 20) - len(done))
-        self.win_progress.clear()
+        self.win_progress.erase()
         self.win_progress.addstr(
             "Progress: [{}{}] ({:>3}%)".format(done, todo,
                                                int(round(percent * 100, 0))))
@@ -165,7 +163,6 @@ class CursesUi():
 
         self.win_status_files.refresh()
         self.win_status_err.refresh()
-
 
 
 class FileSystemTree(object):
@@ -237,6 +234,7 @@ class FileSystemTree(object):
         for fobj in self.files.values():
             fobj.ui = self.ui
             fobj.update(forced)
+            self.ui.update_progress()
 
     def verify_files(self, min_age):
         stdscr = curses.initscr()
@@ -246,6 +244,7 @@ class FileSystemTree(object):
         for fobj in self.files.values():
             fobj.ui = self.ui
             fobj.verify_older(min_age)
+            self.ui.update_progress()
 
     def parse_facl_output(self, output):
         ''' parses the output of getattr
@@ -301,7 +300,7 @@ class MetaDataEntry(object):
         with open(fname, 'rb') as f:
             for chunk in iter(partial(f.read, READ_BUFFER_SIZE), b''):
                 fhash.update(chunk)
-                self.ui.udpate_spin()
+                self.ui.update_spin()
 
         return fhash.hexdigest()
 
