@@ -33,7 +33,6 @@ from time import strptime, strftime, localtime
 from datetime import datetime, timedelta
 from os import stat
 from hashlib import sha1
-from functools import partial
 import curses
 from signal import signal, SIGWINCH
 
@@ -298,7 +297,7 @@ class MetaDataEntry(object):
         '''
         fhash = sha1()
         with open(fname, 'rb') as f:
-            for chunk in iter(partial(f.read, READ_BUFFER_SIZE), b''):
+            while chunk := f.read(READ_BUFFER_SIZE):
                 fhash.update(chunk)
                 self.ui.update_spin()
 
