@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-'''
+"""
 shasum.py
 -----------------------------------------------------------------------
 Computes and stores the shasum of files in file system attributes
@@ -25,26 +25,30 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 @author: Albert Weichselbraun <albert@weichselbraun.net>
-'''
+"""
 
+import curses
 from argparse import ArgumentParser
+from datetime import datetime, timedelta
+from hashlib import sha1
+from os import stat
+from pathlib import Path
+from signal import signal, SIGWINCH
 from subprocess import check_output, run
 from time import strptime, strftime, localtime
-from datetime import datetime, timedelta
-from os import stat
-from hashlib import sha1
-import curses
-from signal import signal, SIGWINCH
+from xattr import xattr
 
 
 READ_BUFFER_SIZE = 1024*1024*8
+XATTR_KEY_HASH = 'user.sha1'
+XATTR_KEY_DATE = 'user.sha1date'
 
 
 def shellquote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
-class CursesUi():
+class CursesUi:
 
     def __init__(self, stdscr, total_items):
         self.stdscr = stdscr
@@ -129,7 +133,7 @@ class CursesUi():
         for no, fname in enumerate(reversed(cur_window_buffer)):
             if no >= window.getmaxyx()[0]-1:
                 break
-            window.addstr(fname[-window.getmaxyx()[1]:] + "\n")
+            window.addstr(fname[-window.getmaxyx()[1]+1:] + "\n")
         window.refresh()
 
     def update_spin(self):
@@ -164,27 +168,24 @@ class CursesUi():
         self.win_status_err.refresh()
 
 
-class FileSystemTree(object):
+class FileSystemTree:
     '''
     Provides methods for handling files in a file
     system tree based on the getfattr output.
     '''
-    def __init__(self, root="/"):
-        self.files = self.get_files(root)
+    def __init__(self, paths):
+        self.files = self.get_files(paths)
+        stdscr = curses.initscr()
+        self.ui = CursesUi(stdscr, len(self.files.values()))
+        signal(SIGWINCH, self.ui.resize_handler)
 
-    def get_files(self, root):
+    def get_files(self, paths):
         # get file list
-        files = {fname: MetaDataEntry(fname)
-                 for fname in check_output(["find", root, "-type", "f"])
-                 .decode("utf8").strip().split("\n")}
-
-        # update metadata, if required
-        getfattr_output = check_output(["getfattr", "-R", "-d",
-                                        "--absolute-names", root]) \
-            .decode("utf8").replace("//", "/")
-        if getfattr_output:
-            for fobj in self.parse_facl_output(getfattr_output):
-                files[fobj.fname] = fobj
+        files = {}
+        for root in paths:
+            files.update({fname: MetaDataEntry(fname)
+                          for fname in Path(root).rglob('*')
+                          if fname.is_file()})
         return files
 
     def print_duplicates(self):
@@ -196,8 +197,8 @@ class FileSystemTree(object):
                   ", ".join([d.fname for d in dup]))
 
     def print_deduplication_sh(self):
-        ''' ::returns: a bash script which will replace duplicates
-                       with hardlinks '''
+        """ ::returns: a bash script which will replace duplicates
+                       with hardlinks """
         print("#!/bin/sh")
         known_hashes, duplicates = self._get_duplicates()
         for h, dup in duplicates.items():
@@ -207,8 +208,8 @@ class FileSystemTree(object):
                                        shellquote(d.fname)))
 
     def _get_duplicates(self):
-        ''' ::returns: a dictionary with the hash and file
-                       objects of all all known_files and of all duplicates '''
+        """ ::returns: a dictionary with the hash and file
+                       objects of all all known_files and of all duplicates """
         known_hashes = {}
         duplicates = {}
         for fobj in self.files.values():
@@ -227,133 +228,114 @@ class FileSystemTree(object):
         return known_hashes, duplicates
 
     def update_files(self, forced=False):
-        stdscr = curses.initscr()
-        self.ui = CursesUi(stdscr, len(self.files.values()))
-        signal(SIGWINCH, self.ui.resize_handler)
         for fobj in self.files.values():
             fobj.ui = self.ui
             fobj.update(forced)
-            self.ui.update_progress()
 
     def verify_files(self, min_age):
-        stdscr = curses.initscr()
-        self.ui = CursesUi(stdscr, len(self.files.values()))
-        signal(SIGWINCH, self.ui.resize_handler)
         min_age = (datetime.now() - timedelta(days=min_age)).timetuple()
         for fobj in self.files.values():
             fobj.ui = self.ui
             fobj.verify_older(min_age)
-            self.ui.update_progress()
-
-    def parse_facl_output(self, output):
-        ''' parses the output of getattr
-            # file: path + fname
-            user.sha1="0000000000000000000000000000000000000000"
-            user.sha1date="2013-06-02"
-        '''
-        sha_hash = None
-        sha_date = None
-        for line in output.split("\n"):
-            if line.startswith("# file:"):
-                fname = line.split("# file: ")[1]
-                continue
-            elif line.startswith("user.sha1="):
-                sha_hash = line.split("user.sha1=")[1].replace("\"", "")
-            elif line.startswith("user.sha1date="):
-                sha_date_str = line.split("user.sha1date=")[1].replace("\"",
-                                                                       "")
-                if ':' in sha_date_str:
-                    sha_date = strptime(sha_date_str,
-                                        MetaDataEntry.DEFAULT_TIME_FORMAT)
-                else:
-                    sha_date = strptime(sha_date_str,
-                                        MetaDataEntry.LEGACY_TIME_FORMAT)
-
-            elif line.strip() == "" and sha_hash and sha_date:
-                yield MetaDataEntry(fname, sha_hash, sha_date)
-                sha_hash = None
-                sha_date = None
 
 
-class MetaDataEntry(object):
-    ''' parses the metadata provided by setfattr and exposes
+class MetaDataEntry:
+    """ parses the metadata provided by setfattr and exposes
         it through an object interface.
-    '''
+    """
 
     DEFAULT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
     LEGACY_TIME_FORMAT = "%Y-%m-%d"
 
-    def __init__(self, fname, sha_hash=None, sha_date=None):
+    def __init__(self, fname: Path):
         self.fname = fname
-        self.sha_hash = sha_hash
-        self.sha_date = sha_date
+        self.attrs = xattr(fname)
+        self.ui = None
 
-    def sha(self, fname):
-        '''
+    @staticmethod
+    def parse_date(date_str: str):
+        """
+        Return the datetime object for the given date string.
+        """
+        if b':' in date_str:
+            return strptime(date_str.decode(),
+                            MetaDataEntry.DEFAULT_TIME_FORMAT)
+
+        return strptime(date_str.decode(), MetaDataEntry.LEGACY_TIME_FORMAT)
+
+    def sha(self):
+        """
         A memory friendly function for computing the shasum of a file.
-        ::param: fname
-        ::return:
+
+        Args:
+            fname: path of the file for which the checksum should be
+            computed.
+
+        Returns:
             computes the file's shaname
-        '''
+        """
         fhash = sha1()
-        with open(fname, 'rb') as f:
+        with self.fname.open('rb') as f:
             while chunk := f.read(READ_BUFFER_SIZE):
                 fhash.update(chunk)
                 self.ui.update_spin()
 
-        return fhash.hexdigest()
+        return fhash.hexdigest().encode()
+
+    def update_hash_time(self):
+        """
+        Update the sha1date to now.
+
+        This method is called after computing or verifying the file's hash.
+        """
+        self.attrs[XATTR_KEY_DATE] = strftime(self.DEFAULT_TIME_FORMAT,
+                                             localtime()).encode('utf8')
 
     def update(self, force=False):
-        ''' updates the shasum of the given file
+        """ updates the shasum of the given file
             @param force: whether to force an update of files with existing
                           shasums
-        '''
-        if self.sha_hash and not force:
+        """
+        if not force and XATTR_KEY_HASH in self.attrs:
             self.ui.update_progress()
             return
 
-        self.ui.set_current_file(self.fname)
-
-        self.sha_hash = self.sha(self.fname)
-        self.sha_date = localtime()
+        self.ui.set_current_file(str(self.fname))
         # serialize changes
-        self._write(self.fname, 'user.sha1', self.sha_hash)
-        self._write(self.fname, 'user.sha1date', strftime(
-            self.DEFAULT_TIME_FORMAT, self.sha_date))
+        self.attrs[XATTR_KEY_HASH] = self.sha()
+        self.update_hash_time()
+        self.ui.update_progress()
 
     def verify(self):
-        ''' verifies the sha sum and updates the sha1date value accordingly'''
-        if not self.sha_hash:
-            self.update()
+        """ verifies the sha sum and updates the sha1date value accordingly"""
+        if XATTR_KEY_HASH not in self.attrs:
+            self.update(force=True)
             return
 
-        self.ui.set_current_file(self.fname)
-        sha_content = self.sha(self.fname)
-        if sha_content == self.sha_hash:
-            self.sha_date = localtime()
-            self._write(self.fname, 'user.sha1date', strftime(
-                self.DEFAULT_TIME_FORMAT, self.sha_date))
-            self.ui.add_file("completed", self.fname)
+        self.ui.set_current_file(str(self.fname))
+        if self.sha() == self.attrs[XATTR_KEY_HASH]:
+            self.update_hash_time()
+            self.ui.add_file("completed", str(self.fname))
+            self.ui.update_progress()
         else:
-            self.ui.add_file("errors", self.fname)
+            self.ui.add_file("errors", str(self.fname))
+            self.ui.update_progress(error=1)
 
     def verify_older(self, min_date):
-        ''' verifies the shasum of the file if it is older than
-            min_date '''
-        if not self.sha_date or self.sha_date < min_date:
-            self.verify()
+        """ Verifies the shasum of the file, if it is older than
+            min_date or does not exist."""
+        try:
+            if self.parse_date(self.attrs[XATTR_KEY_DATE]) > min_date:
+                return
+        except KeyError:
+            pass
 
-    @staticmethod
-    def _write(fname, attr, value):
-        run(["setfattr", "-n", attr, "-v", value, fname])
-
-    def __str__(self):
-        return f"{self.fname} ({self.sha_hash}, {self.sha_date})"
+        self.verify()
 
 
 def get_arguments():
     parser = ArgumentParser(description='Compute shasums')
-    parser.add_argument('path', metavar='path', type=str,
+    parser.add_argument('path', metavar='path', type=str, nargs='+',
                         help='Path for computing checksums')
     parser.add_argument('--verify', metavar='age', type=int, default=180,
                         help='Verify the shasums of all files with a last '
@@ -374,10 +356,10 @@ def get_arguments():
 # Unit tests
 # --------------------------------------------------------------------------
 def test_shasum():
-    ''' compares the system's shasum with the internal one. '''
+    """ compares the system's shasum with the internal one. """
     fname = "/etc/passwd"
     assert check_output(['/usr/bin/shasum', fname]).decode("utf8").\
-        split()[0] == MetaDataEntry().sha(fname)
+        split()[0] == MetaDataEntry(Path(fname)).sha
 
 
 # --------------------------------------------------------------------------
@@ -390,8 +372,8 @@ if __name__ == '__main__':
     if args.compute:
         ftree.update_files()
     elif args.sha:
-        sha = MetaDataEntry.sha(args.path)
-        print(args.path, sha)
+        sha_hash = MetaDataEntry(Path(args.path)).sha()
+        print(args.path, sha_hash)
     elif args.verify is not None:
         ftree.verify_files(args.verify)
     elif args.print_duplicates:
