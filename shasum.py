@@ -167,6 +167,9 @@ class CursesUi:
         self.win_status_files.refresh()
         self.win_status_err.refresh()
 
+    def end(self):
+        curses.endwin()
+
 
 class FileSystemTree:
     '''
@@ -176,16 +179,16 @@ class FileSystemTree:
     def __init__(self, paths):
         self.files = self.get_files(paths)
         stdscr = curses.initscr()
-        self.ui = CursesUi(stdscr, len(self.files.values()))
+        self.ui = CursesUi(stdscr, len(self.files))
         signal(SIGWINCH, self.ui.resize_handler)
 
     def get_files(self, paths):
         # get file list
-        files = {}
+        files = []
         for root in paths:
-            files.update({fname: MetaDataEntry(fname)
+            files.extend([MetaDataEntry(fname)
                           for fname in Path(root).rglob('*')
-                          if fname.is_file()})
+                          if fname.is_file()])
         return files
 
     def print_duplicates(self):
@@ -212,7 +215,7 @@ class FileSystemTree:
                        objects of all all known_files and of all duplicates """
         known_hashes = {}
         duplicates = {}
-        for fobj in self.files.values():
+        for fobj in self.files:
             if fobj.sha_hash is None:
                 continue
 
@@ -228,15 +231,26 @@ class FileSystemTree:
         return known_hashes, duplicates
 
     def update_files(self, forced=False):
-        for fobj in self.files.values():
+        for fobj in self.files:
             fobj.ui = self.ui
             fobj.update(forced)
 
     def verify_files(self, min_age):
         min_age = (datetime.now() - timedelta(days=min_age)).timetuple()
-        for fobj in self.files.values():
+        for fobj in self.files:
             fobj.ui = self.ui
             fobj.verify_older(min_age)
+        self.ui.end()
+
+        print('\n\n\nSummary')
+        print('=======')
+        print(f'Total files   : {len(self.files)}')
+        print(f'Verified files: {len(self.ui.window_buffer.completed)}')
+        print(f'Errors        : {len(self.ui.window_buffer.errors)}\n')
+        if len(self.ui.window_buffer.errors):
+            print('Faulty files')
+            print('============')
+            print('\n'.join(self.ui.window_buffer.errors))
 
 
 class MetaDataEntry:
