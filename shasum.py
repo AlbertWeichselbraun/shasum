@@ -29,8 +29,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import curses
 from argparse import ArgumentParser
+from collections import namedtuple
 from datetime import datetime, timedelta
 from hashlib import sha1
+from itertools import cycle
 from os import stat
 from pathlib import Path
 from signal import signal, SIGWINCH
@@ -42,6 +44,8 @@ from xattr import xattr
 READ_BUFFER_SIZE = 1024*1024*8
 XATTR_KEY_HASH = 'user.sha1'
 XATTR_KEY_DATE = 'user.sha1date'
+
+Stats = namedtuple('Stats', 'new completed errors')
 
 
 def shellquote(s):
@@ -56,8 +60,7 @@ class CursesUi:
         self.err_items = 0
         self.total_items = total_items
         self.init_gui()
-        self.window_buffer = {'completed': [],
-                              'errors': []}
+        self.window_buffer = Stats(new=[], completed=[], errors=[])
         self.spinner = self.cursor()
 
     def init_gui(self):
@@ -100,9 +103,8 @@ class CursesUi:
 
     @staticmethod
     def cursor():
-        while True:
-            for cursor in "\\|/-":
-                yield cursor
+        for cursor in cycle('\\|/-'):
+            yield cursor
 
     def set_current_file(self, fname):
         _, max_x = self.win_current_file.getmaxyx()
@@ -122,18 +124,16 @@ class CursesUi:
         window = self.win_completed_files if window_name == \
             'completed' else self.win_errors
         max_y, max_x = window.getmaxyx()
-        cur_window_buffer = self.window_buffer[window_name]
+        cur_window_buffer = getattr(self.window_buffer, window_name)
         cur_window_buffer.append(fname)
 
         # enforce max_y size
-        if len(cur_window_buffer) >= max_y:
+        while len(cur_window_buffer) >= max_y:
             cur_window_buffer.pop(0)
 
         window.erase()
         for no, fname in enumerate(reversed(cur_window_buffer)):
-            if no >= window.getmaxyx()[0]-1:
-                break
-            window.addstr(fname[-window.getmaxyx()[1]+1:] + "\n")
+            window.addstr(fname[-max_x+1:] + "\n")
         window.refresh()
 
     def update_spin(self):
@@ -342,6 +342,9 @@ def get_arguments():
                              'sha1date older than age days (default: 180).')
     parser.add_argument('--compute', action='store_true',
                         help='Compute the shasum of all new files.')
+    parser.add_argument('--update', metavar='age', type=int, default=180,
+                        help='Verify the shasums of all files with a last '
+                             'sha1date older than age days (default: 180).')
     parser.add_argument('--sha', action='store_true',
                         help='Computes the SHA sum of the given file.')
     parser.add_argument('--print-duplicates', action='store_true',
