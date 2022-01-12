@@ -95,6 +95,8 @@ class CursesUi:
                                              5 + nlines_file_windows, 2)
 
         self.stdscr.refresh()
+        # initialize gui
+        self.update_progress(done=0, error=0)
 
     def resize_handler(self, signum, frame):
         curses.update_lines_cols()
